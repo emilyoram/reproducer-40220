@@ -39,18 +39,18 @@ jobs:
         run: mvn compile -q
 
       - name: Run reproducer (2 minutes)
-        run: mvn exec:java -q 2>&1 | tee reproducer-output.txt
+        run: mvn exec:java 2>&1 | tee reproducer-output.txt
 
       - name: Check for DEADLINE_EXCEEDED warnings
         run: |
           echo "=== Checking for DEADLINE_EXCEEDED log pollution ==="
-          count=$(grep -c "DEADLINE_EXCEEDED" reproducer-output.txt || true)
+          count=$(grep -c "StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
           echo "Found $count DEADLINE_EXCEEDED warnings in 2 minutes"
           if [ "$count" -gt 0 ]; then
             echo "✗ Bug confirmed: idle job worker produced $count DEADLINE_EXCEEDED warnings"
             echo ""
             echo "=== Sample output ==="
-            grep "DEADLINE_EXCEEDED" reproducer-output.txt | head -5
+            grep -A2 "StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -10
             exit 1
           else
             echo "✓ No DEADLINE_EXCEEDED warnings observed"
