@@ -1,0 +1,23 @@
+# Reproducer for camunda/camunda#40220
+# Zeebe with gRPC long-polling enabled (default) and a long-polling timeout
+# configured to exceed the client's gRPC deadline, triggering DEADLINE_EXCEEDED.
+services:
+  zeebe:
+    image: camunda/zeebe:8.6.7
+    container_name: zeebe-40220
+    ports:
+      - "26500:26500"
+      - "9600:9600"
+    environment:
+      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_ENABLED=true
+      # Set long-polling timeout to 20s. The Zeebe Java client's gRPC deadline
+      # is requestTimeout (10s) + DEADLINE_OFFSET (10s) = 20s.
+      # With network latency, the client's deadline fires before the gateway
+      # responds, causing DEADLINE_EXCEEDED.
+      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=20000ms
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9600/actuator/health/readiness || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s

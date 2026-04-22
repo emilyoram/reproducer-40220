@@ -1,0 +1,62 @@
+name: Run Reproducer
+on:
+  workflow_dispatch:
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      zeebe:
+        image: camunda/zeebe:8.6.7
+        ports:
+          - 26500:26500
+          - 9600:9600
+        env:
+          ZEEBE_BROKER_GATEWAY_LONGPOLLING_ENABLED: "true"
+          ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT: "20000ms"
+        options: >-
+          --health-cmd "curl -f http://localhost:9600/actuator/health/readiness || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 30s
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build
+        run: mvn compile -q
+
+      - name: Run reproducer (2 minutes)
+        run: mvn exec:java -q 2>&1 | tee reproducer-output.txt
+
+      - name: Check for DEADLINE_EXCEEDED warnings
+        run: |
+          echo "=== Checking for DEADLINE_EXCEEDED log pollution ==="
+          count=$(grep -c "DEADLINE_EXCEEDED" reproducer-output.txt || true)
+          echo "Found $count DEADLINE_EXCEEDED warnings in 2 minutes"
+          if [ "$count" -gt 0 ]; then
+            echo "✗ Bug confirmed: idle job worker produced $count DEADLINE_EXCEEDED warnings"
+            echo ""
+            echo "=== Sample output ==="
+            grep "DEADLINE_EXCEEDED" reproducer-output.txt | head -5
+            exit 1
+          else
+            echo "✓ No DEADLINE_EXCEEDED warnings observed"
+          fi
+
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducer-output
+          path: reproducer-output.txt
