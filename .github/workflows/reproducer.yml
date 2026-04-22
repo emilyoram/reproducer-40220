@@ -18,7 +18,7 @@ jobs:
         run: |
           echo "Waiting for Zeebe to be ready..."
           for i in $(seq 1 60); do
-            if docker compose exec -T zeebe wget -q --spider http://localhost:9600/actuator/health/readiness 2>/dev/null; then
+            if curl -sf http://localhost:9600/actuator/health/readiness > /dev/null 2>&1; then
               echo "Zeebe is ready after ~$((i*2))s"
               exit 0
             fi
