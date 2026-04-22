@@ -7,25 +7,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    services:
-      zeebe:
-        image: camunda/zeebe:8.6.7
-        ports:
-          - 26500:26500
-          - 9600:9600
-        env:
-          ZEEBE_BROKER_GATEWAY_LONGPOLLING_ENABLED: "true"
-          ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT: "20000"
-        options: >-
-          --health-cmd "curl -f http://localhost:9600/actuator/health/readiness || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 30
-          --health-start-period 30s
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Start Zeebe
+        run: docker compose up -d
+
+      - name: Wait for Zeebe to be ready
+        run: |
+          echo "Waiting for Zeebe to be ready..."
+          for i in $(seq 1 60); do
+            if docker compose exec -T zeebe wget -q --spider http://localhost:9600/actuator/health/readiness 2>/dev/null; then
+              echo "Zeebe is ready after ~$((i*2))s"
+              exit 0
+            fi
+            echo "  waiting... ($i/60)"
+            sleep 2
+          done
+          echo "Zeebe did not become ready in time"
+          docker compose logs zeebe
+          exit 1
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -60,3 +62,7 @@ jobs:
         with:
           name: reproducer-output
           path: reproducer-output.txt
+
+      - name: Stop Zeebe
+        if: always()
+        run: docker compose down
