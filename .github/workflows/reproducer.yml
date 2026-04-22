@@ -15,7 +15,7 @@ jobs:
           - 9600:9600
         env:
           ZEEBE_BROKER_GATEWAY_LONGPOLLING_ENABLED: "true"
-          ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT: "20000ms"
+          ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT: "20000"
         options: >-
           --health-cmd "curl -f http://localhost:9600/actuator/health/readiness || exit 1"
           --health-interval 5s

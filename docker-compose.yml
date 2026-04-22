@@ -14,7 +14,7 @@ services:
       # is requestTimeout (10s) + DEADLINE_OFFSET (10s) = 20s.
       # With network latency, the client's deadline fires before the gateway
       # responds, causing DEADLINE_EXCEEDED.
-      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=20000ms
+      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=20000
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9600/actuator/health/readiness || exit 1"]
       interval: 5s
