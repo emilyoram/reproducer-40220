@@ -16,7 +16,7 @@ services:
       # responds, causing DEADLINE_EXCEEDED.
       - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=20000
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:9600/actuator/health/readiness || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9600' 2>/dev/null || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
