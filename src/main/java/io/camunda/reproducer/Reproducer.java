@@ -1,11 +1,10 @@
 package io.camunda.reproducer;
 
 import io.camunda.zeebe.client.ZeebeClient;
+import io.camunda.zeebe.client.ZeebeClientBuilder;
 import io.camunda.zeebe.client.api.worker.JobHandler;
 import io.camunda.zeebe.client.api.worker.JobWorker;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Reproducer for <a href="https://github.com/camunda/camunda/issues/40220">
@@ -29,58 +28,67 @@ import java.util.List;
  *
  * <h2>Usage</h2>
  * <pre>
- * # Start Zeebe with Docker Compose (long-polling enabled by default):
+ * # Local mode (Docker Compose):
  * docker compose up -d
- *
- * # Wait for Zeebe to be ready (~30s), then run:
  * mvn compile exec:java
  *
- * # Watch the output for ~60 seconds. You should see repeated WARN lines like:
- * # WARN io.camunda.client.job.poller - Failed to activate jobs for worker default and job type reproducer-40220-no-jobs
- * # io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED: ...
+ * # SaaS mode (set env vars):
+ * export ZEEBE_CLIENT_CLOUD_CLUSTER_ID=your-cluster-id
+ * export ZEEBE_CLIENT_CLOUD_REGION=bru-2
+ * export ZEEBE_CLIENT_ID=your-client-id
+ * export ZEEBE_CLIENT_SECRET=your-client-secret
+ * mvn compile exec:java
  * </pre>
  */
 public class Reproducer {
 
-    /**
-     * A job type that deliberately has no corresponding jobs. This ensures the worker is always
-     * idle and triggers the long-polling timeout path.
-     */
     private static final String IDLE_JOB_TYPE = "reproducer-40220-no-jobs";
-
-    /**
-     * How long to keep the reproducer running. Two minutes gives enough time to observe
-     * multiple DEADLINE_EXCEEDED cycles (~20s each).
-     */
     private static final Duration RUN_DURATION = Duration.ofMinutes(2);
 
-    /**
-     * A no-op handler — we never expect to receive jobs.
-     */
     private static final JobHandler NOOP_HANDLER = (client, job) -> {
         System.out.println("[UNEXPECTED] Received job: " + job.getKey());
         client.newCompleteCommand(job.getKey()).send().join();
     };
 
     public static void main(final String[] args) throws InterruptedException {
-        final String gatewayAddress = envOrDefault("ZEEBE_ADDRESS", "localhost:26500");
-        final boolean usePlaintext = Boolean.parseBoolean(envOrDefault("ZEEBE_PLAINTEXT", "true"));
+        final boolean saasMode = System.getenv("ZEEBE_CLIENT_CLOUD_CLUSTER_ID") != null;
 
         System.out.println("=== Reproducer for camunda/camunda#40220 ===");
-        System.out.println("Gateway: " + gatewayAddress);
-        System.out.println("Plaintext: " + usePlaintext);
+        System.out.println("Mode: " + (saasMode ? "SaaS (cloud)" : "Local (Docker)"));
         System.out.println("Job type: " + IDLE_JOB_TYPE);
         System.out.println("Run duration: " + RUN_DURATION);
         System.out.println();
-        System.out.println("Expecting WARN-level 'Failed to activate jobs' with DEADLINE_EXCEEDED");
-        System.out.println("every ~20 seconds if the bug is present.");
+        System.out.println("Expecting WARN-level 'Failed to activate jobs' with");
+        System.out.println("StatusRuntimeException: DEADLINE_EXCEEDED every ~20s if the bug is present.");
         System.out.println("============================================");
         System.out.println();
 
-        final var builder = ZeebeClient.newClientBuilder().gatewayAddress(gatewayAddress);
-        if (usePlaintext) {
-            builder.usePlaintext();
+        final ZeebeClientBuilder builder;
+        if (saasMode) {
+            // SaaS mode: uses ZEEBE_CLIENT_CLOUD_CLUSTER_ID, ZEEBE_CLIENT_CLOUD_REGION,
+            // ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars
+            final String clusterId = System.getenv("ZEEBE_CLIENT_CLOUD_CLUSTER_ID");
+            final String region = envOrDefault("ZEEBE_CLIENT_CLOUD_REGION", "bru-2");
+            final String clientId = System.getenv("ZEEBE_CLIENT_ID");
+            final String clientSecret = System.getenv("ZEEBE_CLIENT_SECRET");
+            builder = ZeebeClient.newCloudClientBuilder()
+                    .withClusterId(clusterId)
+                    .withRegion(region)
+                    .withClientId(clientId)
+                    .withClientSecret(clientSecret);
+            System.out.println("Connecting to SaaS cluster: " + clusterId + "." + region);
+        } else {
+            // Local mode: connect to Docker Compose Zeebe
+            final String gatewayAddress = envOrDefault("ZEEBE_ADDRESS", "localhost:26500");
+            final boolean usePlaintext = Boolean.parseBoolean(
+                    envOrDefault("ZEEBE_PLAINTEXT", "true"));
+            builder = ZeebeClient.newClientBuilder().gatewayAddress(gatewayAddress);
+            if (usePlaintext) {
+                builder.usePlaintext();
+            }
+            System.out.println("Connecting to local gateway: " + gatewayAddress);
         }
+        System.out.println();
 
         try (final ZeebeClient client = builder.build()) {
             // Verify connectivity
@@ -104,8 +112,9 @@ public class Reproducer {
 
             System.out.println();
             System.out.println("=== Reproducer complete ===");
-            System.out.println("If you saw repeated DEADLINE_EXCEEDED warnings above, the bug is present.");
-            System.out.println("If no warnings appeared, the gateway is responding before the client deadline.");
+            System.out.println("Check above for StatusRuntimeException: DEADLINE_EXCEEDED warnings.");
+            System.out.println("If present, the bug is confirmed. If absent, the gateway");
+            System.out.println("responded before the client deadline expired.");
         }
     }
 
