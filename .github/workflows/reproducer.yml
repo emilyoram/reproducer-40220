@@ -97,47 +97,47 @@ jobs:
       matrix:
         include:
           # --- Should trigger bug (server timeout > client gRPC deadline) ---
-          # gRPC deadline = requestTimeout + 10s DEADLINE_OFFSET
-          #  1: client 5s  → deadline 15s, server 20s  → server 5s over
+          # New client: gRPC deadline = requestTimeout + 1s offset
+          #  1: client 5s  -> deadline 6s,  server 10s  -> server 4s over
           - client_timeout: 5
-            server_timeout: 20000
-            expect_bug: true
-          #  2: client 8s  → deadline 18s, server 25s  → server 7s over
-          - client_timeout: 8
-            server_timeout: 25000
-            expect_bug: true
-          #  3: client 10s → deadline 20s, server 25s  → server 5s over
-          - client_timeout: 10
-            server_timeout: 25000
-            expect_bug: true
-          #  4: client 10s → deadline 20s, server 30s  → server 10s over
-          - client_timeout: 10
-            server_timeout: 30000
-            expect_bug: true
-          #  5: client 15s → deadline 25s, server 35s  → server 10s over
-          - client_timeout: 15
-            server_timeout: 35000
-            expect_bug: true
-          # --- Should NOT trigger bug (server timeout <= client gRPC deadline) ---
-          #  6: client 10s → deadline 20s, server 10s  → client 10s over
-          - client_timeout: 10
             server_timeout: 10000
-            expect_bug: false
-          #  7: client 10s → deadline 20s, server 15s  → client 5s over
+            expect_bug: true
+          #  2: client 8s  -> deadline 9s,  server 15s  -> server 6s over
+          - client_timeout: 8
+            server_timeout: 15000
+            expect_bug: true
+          #  3: client 10s -> deadline 11s, server 15s  -> server 4s over
           - client_timeout: 10
             server_timeout: 15000
+            expect_bug: true
+          #  4: client 10s -> deadline 11s, server 20s  -> server 9s over
+          - client_timeout: 10
+            server_timeout: 20000
+            expect_bug: true
+          #  5: client 10s -> deadline 11s, server 30s  -> server 19s over (default repro)
+          - client_timeout: 10
+            server_timeout: 30000
+            expect_bug: true
+          # --- Should NOT trigger bug (server timeout <= client gRPC deadline) ---
+          #  6: client 10s -> deadline 11s, server 5s   -> client 6s over
+          - client_timeout: 10
+            server_timeout: 5000
             expect_bug: false
-          #  8: client 15s → deadline 25s, server 20s  → client 5s over
+          #  7: client 15s -> deadline 16s, server 10s  -> client 6s over
           - client_timeout: 15
+            server_timeout: 10000
+            expect_bug: false
+          #  8: client 20s -> deadline 21s, server 15s  -> client 6s over
+          - client_timeout: 20
+            server_timeout: 15000
+            expect_bug: false
+          #  9: client 25s -> deadline 26s, server 20s  -> client 6s over
+          - client_timeout: 25
             server_timeout: 20000
             expect_bug: false
-          #  9: client 20s → deadline 30s, server 25s  → client 5s over
-          - client_timeout: 20
-            server_timeout: 25000
-            expect_bug: false
-          # 10: client 30s → deadline 40s, server 30s  → client 10s over
+          # 10: client 30s -> deadline 31s, server 25s  -> client 6s over
           - client_timeout: 30
-            server_timeout: 30000
+            server_timeout: 25000
             expect_bug: false
 
     name: "client=${{ matrix.client_timeout }}s server=${{ matrix.server_timeout }}ms (expect_bug=${{ matrix.expect_bug }})"
@@ -150,11 +150,11 @@ jobs:
         run: |
           CLIENT=${{ matrix.client_timeout }}
           SERVER=${{ matrix.server_timeout }}
-          DEADLINE=$((CLIENT + 10))
+          DEADLINE=$((CLIENT + 1))
           SERVER_S=$((SERVER / 1000))
           echo "### Timeout Configuration"
           echo "Client requestTimeout:         ${CLIENT}s"
-          echo "Client gRPC deadline:          ${DEADLINE}s (requestTimeout + 10s DEADLINE_OFFSET)"
+          echo "Client gRPC deadline:          ${DEADLINE}s (requestTimeout + 1s offset)"
           echo "Server long-polling timeout:   ${SERVER_S}s (${SERVER}ms)"
           if [ "${{ matrix.expect_bug }}" = "true" ]; then
             echo "→ Server (${SERVER_S}s) > client deadline (${DEADLINE}s) → EXPECT DEADLINE_EXCEEDED"
@@ -202,7 +202,7 @@ jobs:
           count=$(grep -c "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
           CLIENT=${{ matrix.client_timeout }}
           SERVER=${{ matrix.server_timeout }}
-          DEADLINE=$((CLIENT + 10))
+          DEADLINE=$((CLIENT + 1))
           SERVER_S=$((SERVER / 1000))
           echo "### Result: client=${CLIENT}s (deadline=${DEADLINE}s) vs server=${SERVER_S}s"
           echo "DEADLINE_EXCEEDED count: $count"

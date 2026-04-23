@@ -15,14 +15,14 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
-    <camunda.client.version>8.6.7</camunda.client.version>
+    <camunda.client.version>8.8.22</camunda.client.version>
   </properties>
 
   <dependencies>
-    <!-- Use the legacy Zeebe Java client, which always uses gRPC for job activation -->
+    <!-- Use the newer Camunda 8 Java client (io.camunda.client), which is where issue #40220 occurs -->
     <dependency>
       <groupId>io.camunda</groupId>
-      <artifactId>zeebe-client-java</artifactId>
+      <artifactId>camunda-client-java</artifactId>
       <version>${camunda.client.version}</version>
     </dependency>
     <dependency>
