@@ -43,6 +43,11 @@ import java.time.Duration;
  *   <li>Server overload causing scheduling delays for the long-polling timer</li>
  * </ul>
  *
+ * <h2>Important: REST vs gRPC</h2>
+ * <p>The new {@code camunda-client-java} defaults to {@code preferRestOverGrpc = true}. The
+ * DEADLINE_EXCEEDED issue only occurs on the <b>gRPC</b> code path. This reproducer must
+ * explicitly set {@code .preferRestOverGrpc(false)} to use gRPC for ActivateJobs.</p>
+ *
  * <h2>Root cause (the logging bug)</h2>
  * <p>In {@code JobPollerImpl.logFailure()}, only {@code RESOURCE_EXHAUSTED} is downgraded to
  * TRACE level. {@code DEADLINE_EXCEEDED} -- which is equally expected and harmless during
@@ -104,7 +109,7 @@ public class Reproducer {
 
         System.out.println("=== Reproducer for camunda/camunda#40220 ===");
         System.out.println("Mode: " + (saasMode ? "SaaS (cloud)" : "Local (Docker)"));
-        System.out.println("Client: camunda-client-java");
+        System.out.println("Client: camunda-client-java (gRPC transport forced)");
         System.out.println("Job type: " + IDLE_JOB_TYPE);
         System.out.println();
         System.out.println("Client requestTimeout:     " + requestTimeoutS + "s"
@@ -152,14 +157,16 @@ public class Reproducer {
 
             builder = CamundaClient.newClientBuilder()
                     .grpcAddress(URI.create("https://" + address))
-                    .credentialsProvider(credentialsBuilder.build());
+                    .credentialsProvider(credentialsBuilder.build())
+                    .preferRestOverGrpc(false);
             System.out.println("Connecting to SaaS: " + address);
         } else {
             // Local mode: connect to Docker Compose Zeebe via plaintext gRPC
             final String gatewayAddress = envOrDefault("ZEEBE_ADDRESS", "localhost:26500");
             builder = CamundaClient.newClientBuilder()
-                    .grpcAddress(URI.create("http://" + gatewayAddress));
-            System.out.println("Connecting to local gateway: " + gatewayAddress);
+                    .grpcAddress(URI.create("http://" + gatewayAddress))
+                    .preferRestOverGrpc(false);
+            System.out.println("Connecting to local gateway (gRPC): " + gatewayAddress);
         }
 
         // Use a generous default request timeout for non-ActivateJobs calls (e.g., topology)
