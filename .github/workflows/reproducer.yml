@@ -53,7 +53,6 @@ jobs:
         run: mvn exec:java 2>&1 | tee reproducer-output.txt
         env:
           # SaaS credentials (only used when mode=saas, set as repository secrets)
-          # Use the same env var names that Camunda Console provides
           CAMUNDA_CLIENT_CLOUD_CLUSTERID: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_CLUSTERID || '' }}
           CAMUNDA_CLIENT_CLOUD_REGION: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_REGION || '' }}
           ZEEBE_CLIENT_ID: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_ID || '' }}
@@ -63,13 +62,13 @@ jobs:
       - name: Check for DEADLINE_EXCEEDED warnings
         run: |
           echo "=== Checking for DEADLINE_EXCEEDED log pollution ==="
-          count=$(grep -c "StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
+          count=$(grep -c "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
           echo "Found $count DEADLINE_EXCEEDED warnings in 2 minutes"
           if [ "$count" -gt 0 ]; then
             echo "✗ Bug confirmed: idle job worker produced $count DEADLINE_EXCEEDED warnings"
             echo ""
             echo "=== Sample output ==="
-            grep -A2 "StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -10
+            grep -B1 -A2 "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -15
             exit 1
           else
             echo "✓ No DEADLINE_EXCEEDED warnings observed"

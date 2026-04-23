@@ -29,17 +29,15 @@ import java.time.Duration;
  *
  * <h2>Usage</h2>
  * <pre>
- * # Local mode (Docker Compose):
+ * # Start Zeebe with Docker Compose (long-polling enabled by default):
  * docker compose up -d
+ *
+ * # Wait for Zeebe to be ready (~30s), then run:
  * mvn compile exec:java
  *
- * # SaaS mode — paste the env vars from Camunda Console:
- * export CAMUNDA_CLIENT_CLOUD_CLUSTERID='your-cluster-id'
- * export CAMUNDA_CLIENT_CLOUD_REGION='jfk-1'
- * export ZEEBE_CLIENT_ID='your-client-id'
- * export ZEEBE_CLIENT_SECRET='your-client-secret'
- * export ZEEBE_AUTHORIZATION_SERVER_URL='https://login.cloud.camunda.io/oauth/token'
- * mvn compile exec:java
+ * # Watch the output for ~60 seconds. You should see repeated WARN lines like:
+ * # WARN io.camunda.client.job.poller - Failed to activate jobs for worker default and job type reproducer-40220-no-jobs
+ * # io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED: ...
  * </pre>
  */
 public class Reproducer {
@@ -62,16 +60,14 @@ public class Reproducer {
         System.out.println("Run duration: " + RUN_DURATION);
         System.out.println();
         System.out.println("Expecting WARN-level 'Failed to activate jobs' with");
-        System.out.println("StatusRuntimeException: DEADLINE_EXCEEDED every ~20s if the bug is present.");
+        System.out.println("DEADLINE_EXCEEDED status every ~20s if the bug is present.");
         System.out.println("============================================");
         System.out.println();
 
         final ZeebeClientBuilder builder;
         if (saasMode) {
-            // Build the gateway address from cluster ID + region
             final String region = firstEnv(
                     "CAMUNDA_CLIENT_CLOUD_REGION", "CAMUNDA_CLUSTER_REGION");
-            // Use ZEEBE_ADDRESS if provided, otherwise construct from cluster ID + region
             final String address = firstEnv("ZEEBE_ADDRESS") != null
                     ? firstEnv("ZEEBE_ADDRESS")
                     : clusterId + "." + (region != null ? region : "bru-2")
@@ -127,7 +123,7 @@ public class Reproducer {
 
             System.out.println();
             System.out.println("=== Reproducer complete ===");
-            System.out.println("Check above for StatusRuntimeException: DEADLINE_EXCEEDED warnings.");
+            System.out.println("Check above for DEADLINE_EXCEEDED warnings.");
             System.out.println("If present, the bug is confirmed. If absent, the gateway");
             System.out.println("responded before the client deadline expired.");
         }
