@@ -10,11 +10,11 @@ services:
       - "9600:9600"
     environment:
       - ZEEBE_BROKER_GATEWAY_LONGPOLLING_ENABLED=true
-      # Set long-polling timeout to 20s. The Zeebe Java client's gRPC deadline
+      # Set long-polling timeout to 30s. The Zeebe Java client's gRPC deadline
       # is requestTimeout (10s) + DEADLINE_OFFSET (10s) = 20s.
-      # With network latency, the client's deadline fires before the gateway
-      # responds, causing DEADLINE_EXCEEDED.
-      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=20000
+      # The gateway holds 10s longer than the client deadline, guaranteeing
+      # the client times out first and logs DEADLINE_EXCEEDED.
+      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=30000
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9600' 2>/dev/null || exit 1"]
       interval: 5s
