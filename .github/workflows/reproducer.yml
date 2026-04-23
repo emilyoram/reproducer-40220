@@ -58,6 +58,7 @@ jobs:
           CAMUNDA_CLIENT_CLOUD_REGION: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_REGION || '' }}
           ZEEBE_CLIENT_ID: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_ID || '' }}
           ZEEBE_CLIENT_SECRET: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_SECRET || '' }}
+          ZEEBE_AUTHORIZATION_SERVER_URL: ${{ inputs.mode == 'saas' && secrets.ZEEBE_AUTHORIZATION_SERVER_URL || '' }}
 
       - name: Check for DEADLINE_EXCEEDED warnings
         run: |

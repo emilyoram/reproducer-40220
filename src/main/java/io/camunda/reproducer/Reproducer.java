@@ -4,6 +4,7 @@ import io.camunda.zeebe.client.ZeebeClient;
 import io.camunda.zeebe.client.ZeebeClientBuilder;
 import io.camunda.zeebe.client.api.worker.JobHandler;
 import io.camunda.zeebe.client.api.worker.JobWorker;
+import io.camunda.zeebe.client.impl.oauth.OAuthCredentialsProviderBuilder;
 import java.time.Duration;
 
 /**
@@ -37,6 +38,7 @@ import java.time.Duration;
  * export CAMUNDA_CLIENT_CLOUD_REGION='jfk-1'
  * export ZEEBE_CLIENT_ID='your-client-id'
  * export ZEEBE_CLIENT_SECRET='your-client-secret'
+ * export ZEEBE_AUTHORIZATION_SERVER_URL='https://login.cloud.camunda.io/oauth/token'
  * mvn compile exec:java
  * </pre>
  */
@@ -66,18 +68,33 @@ public class Reproducer {
 
         final ZeebeClientBuilder builder;
         if (saasMode) {
-            final String region = envOrDefault(
-                    firstEnvKey("CAMUNDA_CLIENT_CLOUD_REGION", "CAMUNDA_CLUSTER_REGION"), "bru-2");
+            // Build the gateway address from cluster ID + region
+            final String region = firstEnv(
+                    "CAMUNDA_CLIENT_CLOUD_REGION", "CAMUNDA_CLUSTER_REGION");
+            // Use ZEEBE_ADDRESS if provided, otherwise construct from cluster ID + region
+            final String address = firstEnv("ZEEBE_ADDRESS") != null
+                    ? firstEnv("ZEEBE_ADDRESS")
+                    : clusterId + "." + (region != null ? region : "bru-2")
+                            + ".zeebe.camunda.io:443";
             final String clientId = firstEnv(
                     "ZEEBE_CLIENT_ID", "CAMUNDA_CLIENT_ID", "CAMUNDA_CLIENT_AUTH_CLIENTID");
             final String clientSecret = firstEnv(
                     "ZEEBE_CLIENT_SECRET", "CAMUNDA_CLIENT_SECRET", "CAMUNDA_CLIENT_AUTH_CLIENTSECRET");
-            builder = ZeebeClient.newCloudClientBuilder()
-                    .withClusterId(clusterId)
-                    .withRegion(region)
-                    .withClientId(clientId)
-                    .withClientSecret(clientSecret);
-            System.out.println("Connecting to SaaS cluster: " + clusterId + "." + region);
+            final String authUrl = firstEnv(
+                    "ZEEBE_AUTHORIZATION_SERVER_URL", "CAMUNDA_OAUTH_URL");
+
+            final var credentialsBuilder = new OAuthCredentialsProviderBuilder()
+                    .clientId(clientId)
+                    .clientSecret(clientSecret)
+                    .audience("zeebe.camunda.io");
+            if (authUrl != null) {
+                credentialsBuilder.authorizationServerUrl(authUrl);
+            }
+
+            builder = ZeebeClient.newClientBuilder()
+                    .gatewayAddress(address)
+                    .credentialsProvider(credentialsBuilder.build());
+            System.out.println("Connecting to SaaS: " + address);
         } else {
             final String gatewayAddress = envOrDefault("ZEEBE_ADDRESS", "localhost:26500");
             final boolean usePlaintext = Boolean.parseBoolean(
@@ -130,16 +147,5 @@ public class Reproducer {
             }
         }
         return null;
-    }
-
-    /** Return the first key that has a non-null env value, or the first key as fallback. */
-    private static String firstEnvKey(final String... keys) {
-        for (final String key : keys) {
-            final String value = System.getenv(key);
-            if (value != null && !value.isEmpty()) {
-                return key;
-            }
-        }
-        return keys[0];
     }
 }
