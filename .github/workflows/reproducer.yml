@@ -53,8 +53,9 @@ jobs:
         run: mvn exec:java 2>&1 | tee reproducer-output.txt
         env:
           # SaaS credentials (only used when mode=saas, set as repository secrets)
-          ZEEBE_CLIENT_CLOUD_CLUSTER_ID: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_CLOUD_CLUSTER_ID || '' }}
-          ZEEBE_CLIENT_CLOUD_REGION: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_CLOUD_REGION || '' }}
+          # Use the same env var names that Camunda Console provides
+          CAMUNDA_CLIENT_CLOUD_CLUSTERID: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_CLUSTERID || '' }}
+          CAMUNDA_CLIENT_CLOUD_REGION: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_REGION || '' }}
           ZEEBE_CLIENT_ID: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_ID || '' }}
           ZEEBE_CLIENT_SECRET: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_SECRET || '' }}
 

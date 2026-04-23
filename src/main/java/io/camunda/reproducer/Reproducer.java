@@ -32,11 +32,11 @@ import java.time.Duration;
  * docker compose up -d
  * mvn compile exec:java
  *
- * # SaaS mode (set env vars):
- * export ZEEBE_CLIENT_CLOUD_CLUSTER_ID=your-cluster-id
- * export ZEEBE_CLIENT_CLOUD_REGION=bru-2
- * export ZEEBE_CLIENT_ID=your-client-id
- * export ZEEBE_CLIENT_SECRET=your-client-secret
+ * # SaaS mode — paste the env vars from Camunda Console:
+ * export CAMUNDA_CLIENT_CLOUD_CLUSTERID='your-cluster-id'
+ * export CAMUNDA_CLIENT_CLOUD_REGION='jfk-1'
+ * export ZEEBE_CLIENT_ID='your-client-id'
+ * export ZEEBE_CLIENT_SECRET='your-client-secret'
  * mvn compile exec:java
  * </pre>
  */
@@ -51,7 +51,8 @@ public class Reproducer {
     };
 
     public static void main(final String[] args) throws InterruptedException {
-        final boolean saasMode = System.getenv("ZEEBE_CLIENT_CLOUD_CLUSTER_ID") != null;
+        final String clusterId = firstEnv("CAMUNDA_CLIENT_CLOUD_CLUSTERID", "CAMUNDA_CLUSTER_ID");
+        final boolean saasMode = clusterId != null;
 
         System.out.println("=== Reproducer for camunda/camunda#40220 ===");
         System.out.println("Mode: " + (saasMode ? "SaaS (cloud)" : "Local (Docker)"));
@@ -65,12 +66,12 @@ public class Reproducer {
 
         final ZeebeClientBuilder builder;
         if (saasMode) {
-            // SaaS mode: uses ZEEBE_CLIENT_CLOUD_CLUSTER_ID, ZEEBE_CLIENT_CLOUD_REGION,
-            // ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars
-            final String clusterId = System.getenv("ZEEBE_CLIENT_CLOUD_CLUSTER_ID");
-            final String region = envOrDefault("ZEEBE_CLIENT_CLOUD_REGION", "bru-2");
-            final String clientId = System.getenv("ZEEBE_CLIENT_ID");
-            final String clientSecret = System.getenv("ZEEBE_CLIENT_SECRET");
+            final String region = envOrDefault(
+                    firstEnvKey("CAMUNDA_CLIENT_CLOUD_REGION", "CAMUNDA_CLUSTER_REGION"), "bru-2");
+            final String clientId = firstEnv(
+                    "ZEEBE_CLIENT_ID", "CAMUNDA_CLIENT_ID", "CAMUNDA_CLIENT_AUTH_CLIENTID");
+            final String clientSecret = firstEnv(
+                    "ZEEBE_CLIENT_SECRET", "CAMUNDA_CLIENT_SECRET", "CAMUNDA_CLIENT_AUTH_CLIENTSECRET");
             builder = ZeebeClient.newCloudClientBuilder()
                     .withClusterId(clusterId)
                     .withRegion(region)
@@ -78,7 +79,6 @@ public class Reproducer {
                     .withClientSecret(clientSecret);
             System.out.println("Connecting to SaaS cluster: " + clusterId + "." + region);
         } else {
-            // Local mode: connect to Docker Compose Zeebe
             final String gatewayAddress = envOrDefault("ZEEBE_ADDRESS", "localhost:26500");
             final boolean usePlaintext = Boolean.parseBoolean(
                     envOrDefault("ZEEBE_PLAINTEXT", "true"));
@@ -91,13 +91,11 @@ public class Reproducer {
         System.out.println();
 
         try (final ZeebeClient client = builder.build()) {
-            // Verify connectivity
             final var topology = client.newTopologyRequest().send().join();
             System.out.println("Connected to cluster: " + topology.getClusterSize()
                     + " node(s), " + topology.getPartitionsCount() + " partition(s)");
             System.out.println();
 
-            // Register an idle worker — no jobs of this type exist
             try (final JobWorker worker = client.newWorker()
                     .jobType(IDLE_JOB_TYPE)
                     .handler(NOOP_HANDLER)
@@ -121,5 +119,27 @@ public class Reproducer {
     private static String envOrDefault(final String key, final String defaultValue) {
         final String value = System.getenv(key);
         return value != null ? value : defaultValue;
+    }
+
+    /** Return the first non-null env value, or null if none set. */
+    private static String firstEnv(final String... keys) {
+        for (final String key : keys) {
+            final String value = System.getenv(key);
+            if (value != null && !value.isEmpty()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    /** Return the first key that has a non-null env value, or the first key as fallback. */
+    private static String firstEnvKey(final String... keys) {
+        for (final String key : keys) {
+            final String value = System.getenv(key);
+            if (value != null && !value.isEmpty()) {
+                return key;
+            }
+        }
+        return keys[0];
     }
 }
