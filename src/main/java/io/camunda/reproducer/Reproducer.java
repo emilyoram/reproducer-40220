@@ -42,9 +42,18 @@ import java.time.Duration;
  */
 public class Reproducer {
 
+    /**
+     * A job type that deliberately has no corresponding jobs. This ensures the worker is always
+     * idle and triggers the long-polling timeout path.
+     */
     private static final String IDLE_JOB_TYPE = "reproducer-40220-no-jobs";
-    private static final Duration RUN_DURATION = Duration.ofMinutes(2);
 
+    /** DEADLINE_OFFSET constant added by the Zeebe client to requestTimeout for the gRPC deadline. */
+    private static final int DEADLINE_OFFSET_S = 10;
+
+    /**
+     * A no-op handler — we never expect to receive jobs.
+     */
     private static final JobHandler NOOP_HANDLER = (client, job) -> {
         System.out.println("[UNEXPECTED] Received job: " + job.getKey());
         client.newCompleteCommand(job.getKey()).send().join();
@@ -54,13 +63,24 @@ public class Reproducer {
         final String clusterId = firstEnv("CAMUNDA_CLIENT_CLOUD_CLUSTERID", "CAMUNDA_CLUSTER_ID");
         final boolean saasMode = clusterId != null;
 
+        // Configurable timeouts
+        final int requestTimeoutS = Integer.parseInt(
+                envOrDefault("CLIENT_REQUEST_TIMEOUT_S", "10"));
+        final int runDurationS = Integer.parseInt(
+                envOrDefault("RUN_DURATION_S", "120"));
+        final Duration requestTimeout = Duration.ofSeconds(requestTimeoutS);
+        final Duration runDuration = Duration.ofSeconds(runDurationS);
+        final int grpcDeadlineS = requestTimeoutS + DEADLINE_OFFSET_S;
+
         System.out.println("=== Reproducer for camunda/camunda#40220 ===");
         System.out.println("Mode: " + (saasMode ? "SaaS (cloud)" : "Local (Docker)"));
         System.out.println("Job type: " + IDLE_JOB_TYPE);
-        System.out.println("Run duration: " + RUN_DURATION);
+        System.out.println("Client requestTimeout: " + requestTimeoutS + "s");
+        System.out.println("Client gRPC deadline:  " + grpcDeadlineS
+                + "s (requestTimeout + " + DEADLINE_OFFSET_S + "s DEADLINE_OFFSET)");
+        System.out.println("Run duration: " + runDurationS + "s");
         System.out.println();
-        System.out.println("Expecting WARN-level 'Failed to activate jobs' with");
-        System.out.println("DEADLINE_EXCEEDED status every ~20s if the bug is present.");
+        System.out.println("Bug triggers when server long-polling timeout > client gRPC deadline (" + grpcDeadlineS + "s)");
         System.out.println("============================================");
         System.out.println();
 
@@ -112,13 +132,14 @@ public class Reproducer {
             try (final JobWorker worker = client.newWorker()
                     .jobType(IDLE_JOB_TYPE)
                     .handler(NOOP_HANDLER)
+                    .requestTimeout(requestTimeout)
                     .open()) {
 
                 System.out.println("Job worker registered. Monitoring for log pollution...");
                 System.out.println("(Watch for WARN lines from io.camunda.client.job.poller)");
                 System.out.println();
 
-                Thread.sleep(RUN_DURATION.toMillis());
+                Thread.sleep(runDuration.toMillis());
             }
 
             System.out.println();

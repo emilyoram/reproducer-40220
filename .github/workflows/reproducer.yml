@@ -9,10 +9,13 @@ on:
         type: choice
         options:
           - local
+          - local-matrix
           - saas
 
 jobs:
+  # Single run (local or saas)
   reproduce:
+    if: inputs.mode != 'local-matrix'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -52,7 +55,6 @@ jobs:
       - name: Run reproducer (2 minutes)
         run: mvn exec:java 2>&1 | tee reproducer-output.txt
         env:
-          # SaaS credentials (only used when mode=saas, set as repository secrets)
           CAMUNDA_CLIENT_CLOUD_CLUSTERID: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_CLUSTERID || '' }}
           CAMUNDA_CLIENT_CLOUD_REGION: ${{ inputs.mode == 'saas' && secrets.CAMUNDA_CLIENT_CLOUD_REGION || '' }}
           ZEEBE_CLIENT_ID: ${{ inputs.mode == 'saas' && secrets.ZEEBE_CLIENT_ID || '' }}
@@ -83,4 +85,151 @@ jobs:
 
       - name: Stop Zeebe (local only)
         if: always() && inputs.mode == 'local'
+        run: docker compose down
+
+  # Matrix run: 10 combinations of client/server timeouts
+  reproduce-matrix:
+    if: inputs.mode == 'local-matrix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Should trigger bug (server timeout > client gRPC deadline) ---
+          # gRPC deadline = requestTimeout + 10s DEADLINE_OFFSET
+          #  1: client 5s  → deadline 15s, server 20s  → server 5s over
+          - client_timeout: 5
+            server_timeout: 20000
+            expect_bug: true
+          #  2: client 8s  → deadline 18s, server 25s  → server 7s over
+          - client_timeout: 8
+            server_timeout: 25000
+            expect_bug: true
+          #  3: client 10s → deadline 20s, server 25s  → server 5s over
+          - client_timeout: 10
+            server_timeout: 25000
+            expect_bug: true
+          #  4: client 10s → deadline 20s, server 30s  → server 10s over
+          - client_timeout: 10
+            server_timeout: 30000
+            expect_bug: true
+          #  5: client 15s → deadline 25s, server 35s  → server 10s over
+          - client_timeout: 15
+            server_timeout: 35000
+            expect_bug: true
+          # --- Should NOT trigger bug (server timeout <= client gRPC deadline) ---
+          #  6: client 10s → deadline 20s, server 10s  → client 10s over
+          - client_timeout: 10
+            server_timeout: 10000
+            expect_bug: false
+          #  7: client 10s → deadline 20s, server 15s  → client 5s over
+          - client_timeout: 10
+            server_timeout: 15000
+            expect_bug: false
+          #  8: client 15s → deadline 25s, server 20s  → client 5s over
+          - client_timeout: 15
+            server_timeout: 20000
+            expect_bug: false
+          #  9: client 20s → deadline 30s, server 25s  → client 5s over
+          - client_timeout: 20
+            server_timeout: 25000
+            expect_bug: false
+          # 10: client 30s → deadline 40s, server 30s  → client 10s over
+          - client_timeout: 30
+            server_timeout: 30000
+            expect_bug: false
+
+    name: "client=${{ matrix.client_timeout }}s server=${{ matrix.server_timeout }}ms (expect_bug=${{ matrix.expect_bug }})"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print timeout configuration
+        run: |
+          CLIENT=${{ matrix.client_timeout }}
+          SERVER=${{ matrix.server_timeout }}
+          DEADLINE=$((CLIENT + 10))
+          SERVER_S=$((SERVER / 1000))
+          echo "### Timeout Configuration"
+          echo "Client requestTimeout:         ${CLIENT}s"
+          echo "Client gRPC deadline:          ${DEADLINE}s (requestTimeout + 10s DEADLINE_OFFSET)"
+          echo "Server long-polling timeout:   ${SERVER_S}s (${SERVER}ms)"
+          if [ "${{ matrix.expect_bug }}" = "true" ]; then
+            echo "→ Server (${SERVER_S}s) > client deadline (${DEADLINE}s) → EXPECT DEADLINE_EXCEEDED"
+          else
+            echo "→ Server (${SERVER_S}s) ≤ client deadline (${DEADLINE}s) → expect NO warnings"
+          fi
+
+      - name: Start Zeebe
+        run: docker compose up -d
+        env:
+          LONGPOLLING_TIMEOUT: ${{ matrix.server_timeout }}
+
+      - name: Wait for Zeebe to be ready
+        run: |
+          echo "Waiting for Zeebe to be ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:9600/actuator/health/readiness > /dev/null 2>&1; then
+              echo "Zeebe is ready after ~$((i*2))s"
+              exit 0
+            fi
+            echo "  waiting... ($i/60)"
+            sleep 2
+          done
+          echo "Zeebe did not become ready in time"
+          docker compose logs zeebe
+          exit 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build
+        run: mvn compile -q
+
+      - name: Run reproducer (60s)
+        run: mvn exec:java 2>&1 | tee reproducer-output.txt
+        env:
+          CLIENT_REQUEST_TIMEOUT_S: ${{ matrix.client_timeout }}
+          RUN_DURATION_S: "60"
+
+      - name: Check for DEADLINE_EXCEEDED warnings
+        run: |
+          count=$(grep -c "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
+          CLIENT=${{ matrix.client_timeout }}
+          SERVER=${{ matrix.server_timeout }}
+          DEADLINE=$((CLIENT + 10))
+          SERVER_S=$((SERVER / 1000))
+          echo "### Result: client=${CLIENT}s (deadline=${DEADLINE}s) vs server=${SERVER_S}s"
+          echo "DEADLINE_EXCEEDED count: $count"
+          if [ "$count" -gt 0 ]; then
+            echo "✗ Bug triggered: $count DEADLINE_EXCEEDED warnings"
+            grep -B1 -A1 "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -10
+          else
+            echo "✓ No DEADLINE_EXCEEDED warnings"
+          fi
+          # Fail only when result doesn't match expectation
+          if [ "${{ matrix.expect_bug }}" = "true" ] && [ "$count" -eq 0 ]; then
+            echo "UNEXPECTED: expected bug but no warnings observed"
+            exit 1
+          fi
+          if [ "${{ matrix.expect_bug }}" = "false" ] && [ "$count" -gt 0 ]; then
+            echo "UNEXPECTED: did not expect bug but warnings were observed"
+            exit 1
+          fi
+          echo "Result matches expectation."
+
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "output-client${{ matrix.client_timeout }}s-server${{ matrix.server_timeout }}ms"
+          path: reproducer-output.txt
+
+      - name: Stop Zeebe
+        if: always()
         run: docker compose down

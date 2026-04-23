@@ -14,7 +14,7 @@ services:
       # is requestTimeout (10s) + DEADLINE_OFFSET (10s) = 20s.
       # The gateway holds 10s longer than the client deadline, guaranteeing
       # the client times out first and logs DEADLINE_EXCEEDED.
-      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=30000
+      - ZEEBE_BROKER_GATEWAY_LONGPOLLING_TIMEOUT=${LONGPOLLING_TIMEOUT:-30000}
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9600' 2>/dev/null || exit 1"]
       interval: 5s
