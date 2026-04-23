@@ -12,28 +12,53 @@ import java.time.Duration;
  * Reproducer for <a href="https://github.com/camunda/camunda/issues/40220">
  * camunda/camunda#40220</a>: Log pollution due to DEADLINE_EXCEEDED in idle Job Workers.
  *
- * <p>This reproducer registers a job worker for a job type that has no available jobs, then
- * monitors the logs for DEADLINE_EXCEEDED warnings. When the gateway uses gRPC long-polling,
- * the gateway holds the ActivateJobs request open until jobs arrive or the long-polling timeout
- * expires. If the gateway's long-polling timeout exceeds the client's gRPC deadline, the client
- * times out first and logs a WARN-level DEADLINE_EXCEEDED exception -- repeatedly, every
- * polling cycle.</p>
+ * <h2>How gRPC long-polling works</h2>
+ * <p>When a job worker polls for jobs, the client sends an ActivateJobs gRPC call. The gateway
+ * holds the request open (long-polling) until either jobs become available or a timeout expires.
+ * The timeout the gateway uses is determined by:</p>
+ * <ol>
+ *   <li>The client's {@code requestTimeout} field in the protobuf message (if &gt; 0)</li>
+ *   <li>The server's configured {@code longPollingTimeout} (if client sends 0)</li>
+ * </ol>
  *
- * <h2>Root cause</h2>
- * <p>In {@code io.camunda.client.impl.worker.JobPollerImpl.logFailure()}, only
- * {@code RESOURCE_EXHAUSTED} is downgraded to TRACE level. {@code DEADLINE_EXCEEDED} -- which
- * is an expected, non-error condition during long-polling with no available jobs -- is logged
- * at WARN level with a full stack trace.</p>
+ * <p>Meanwhile, the client sets a gRPC deadline of {@code requestTimeout + DEADLINE_OFFSET}.
+ * The {@code DEADLINE_OFFSET} is <b>hardcoded to 10 seconds</b> in
+ * {@code ActivateJobsCommandImpl} (both old and new clients). This gives the server a 10s
+ * buffer to respond after its long-polling timer fires.</p>
  *
- * <h2>Why this triggers easily with the new client</h2>
- * <p>The new {@code camunda-client-java} uses a {@code defaultRequestTimeoutOffset} of only
- * <b>1 second</b> (vs 10s in the legacy zeebe-client-java). So with the default
- * {@code requestTimeout} of 10s, the gRPC deadline is only 11s -- easily exceeded by
- * the gateway's default long-polling timeout of 10s under any network latency.</p>
+ * <h2>How to trigger DEADLINE_EXCEEDED</h2>
+ * <p>Under normal conditions (client requestTimeout &gt; 0), the gateway uses the client's
+ * requestTimeout as its own hold time. With the 10s DEADLINE_OFFSET buffer, the client almost
+ * never times out -- the gateway completes well within the gRPC deadline.</p>
+ *
+ * <p>However, if the worker sets {@code requestTimeout = Duration.ZERO}, the protobuf field
+ * is 0, so the gateway falls back to its own configured {@code longPollingTimeout}. The gRPC
+ * deadline is then just {@code 0 + 10s = 10s}. If the server's longPollingTimeout exceeds
+ * 10 seconds, the client's gRPC deadline expires first, producing DEADLINE_EXCEEDED.</p>
+ *
+ * <p>In production, DEADLINE_EXCEEDED can also occur with non-zero requestTimeout due to:</p>
+ * <ul>
+ *   <li>Network latency or proxy/load balancer timeouts eating into the 10s buffer</li>
+ *   <li>Gateway GC pauses delaying the response after the long-polling timer fires</li>
+ *   <li>Server overload causing scheduling delays for the long-polling timer</li>
+ * </ul>
+ *
+ * <h2>Root cause (the logging bug)</h2>
+ * <p>In {@code JobPollerImpl.logFailure()}, only {@code RESOURCE_EXHAUSTED} is downgraded to
+ * TRACE level. {@code DEADLINE_EXCEEDED} -- which is equally expected and harmless during
+ * idle long-polling -- falls through to {@code LOG.warn()} with a full stack trace. This
+ * pollutes logs on every polling cycle when the condition occurs.</p>
+ *
+ * <h2>Reproducer strategy</h2>
+ * <p>This reproducer sets the worker's {@code requestTimeout} to {@code Duration.ZERO}, which
+ * causes the gateway to fall back to its own {@code longPollingTimeout}. We configure the
+ * server's {@code longPollingTimeout} to exceed the 10s DEADLINE_OFFSET, guaranteeing that
+ * the client's gRPC deadline expires before the server responds. This reliably produces the
+ * DEADLINE_EXCEEDED warnings that demonstrate the logging bug.</p>
  *
  * <h2>Usage</h2>
  * <pre>
- * # Local mode (Docker Compose):
+ * # Local mode (Docker Compose -- server longPollingTimeout = 15s by default):
  * docker compose up -d
  * mvn compile exec:java
  *
@@ -47,10 +72,15 @@ public class Reproducer {
     private static final String IDLE_JOB_TYPE = "reproducer-40220-no-jobs";
 
     /**
-     * The new client's defaultRequestTimeoutOffset (added to requestTimeout for the gRPC
-     * deadline). In camunda-client-java this is 1s, vs 10s in the legacy zeebe-client-java.
+     * Hardcoded DEADLINE_OFFSET in ActivateJobsCommandImpl. The gRPC deadline for ActivateJobs
+     * is {@code requestTimeout + DEADLINE_OFFSET}. This is 10s in BOTH the old zeebe-client-java
+     * and the new camunda-client-java.
+     *
+     * <p>Note: This is NOT the same as {@code defaultRequestTimeoutOffset} in the client builder
+     * (which is 1s in the new client). That offset only affects the HTTP/REST response timeout,
+     * not the gRPC deadline for ActivateJobs.</p>
      */
-    private static final int REQUEST_TIMEOUT_OFFSET_S = 1;
+    private static final int GRPC_DEADLINE_OFFSET_S = 10;
 
     private static final JobHandler NOOP_HANDLER = (client, job) -> {
         System.out.println("[UNEXPECTED] Received job: " + job.getKey());
@@ -61,26 +91,39 @@ public class Reproducer {
         final String clusterId = firstEnv("CAMUNDA_CLIENT_CLOUD_CLUSTERID", "CAMUNDA_CLUSTER_ID");
         final boolean saasMode = clusterId != null;
 
-        // Configurable timeouts
+        // When CLIENT_REQUEST_TIMEOUT_S=0 (default), the protobuf requestTimeout is 0.
+        // The gateway then falls back to its own longPollingTimeout, which we configure
+        // to exceed the 10s DEADLINE_OFFSET. This guarantees DEADLINE_EXCEEDED.
         final int requestTimeoutS = Integer.parseInt(
-                envOrDefault("CLIENT_REQUEST_TIMEOUT_S", "10"));
+                envOrDefault("CLIENT_REQUEST_TIMEOUT_S", "0"));
         final int runDurationS = Integer.parseInt(
                 envOrDefault("RUN_DURATION_S", "120"));
         final Duration requestTimeout = Duration.ofSeconds(requestTimeoutS);
         final Duration runDuration = Duration.ofSeconds(runDurationS);
-        final int grpcDeadlineS = requestTimeoutS + REQUEST_TIMEOUT_OFFSET_S;
+        final int grpcDeadlineS = requestTimeoutS + GRPC_DEADLINE_OFFSET_S;
 
         System.out.println("=== Reproducer for camunda/camunda#40220 ===");
         System.out.println("Mode: " + (saasMode ? "SaaS (cloud)" : "Local (Docker)"));
-        System.out.println("Client: camunda-client-java (new client)");
+        System.out.println("Client: camunda-client-java");
         System.out.println("Job type: " + IDLE_JOB_TYPE);
-        System.out.println("Client requestTimeout: " + requestTimeoutS + "s");
-        System.out.println("Client gRPC deadline:  " + grpcDeadlineS
-                + "s (requestTimeout + " + REQUEST_TIMEOUT_OFFSET_S + "s offset)");
-        System.out.println("Run duration: " + runDurationS + "s");
         System.out.println();
-        System.out.println("Bug triggers when server long-polling timeout > client gRPC deadline (" + grpcDeadlineS + "s)");
-        System.out.println("With the new client (1s offset), even the default server timeout (10s) can trigger this.");
+        System.out.println("Client requestTimeout:     " + requestTimeoutS + "s"
+                + (requestTimeoutS == 0 ? " (gateway will use its own longPollingTimeout)" : ""));
+        System.out.println("gRPC DEADLINE_OFFSET:      " + GRPC_DEADLINE_OFFSET_S
+                + "s (hardcoded in ActivateJobsCommandImpl)");
+        System.out.println("Effective gRPC deadline:   " + grpcDeadlineS + "s");
+        System.out.println("Run duration:              " + runDurationS + "s");
+        System.out.println();
+        if (requestTimeoutS == 0) {
+            System.out.println("With requestTimeout=0, the gateway falls back to its configured");
+            System.out.println("longPollingTimeout. If that exceeds " + grpcDeadlineS
+                    + "s, DEADLINE_EXCEEDED occurs.");
+        } else {
+            System.out.println("With requestTimeout=" + requestTimeoutS
+                    + "s, the gateway uses this as its hold time.");
+            System.out.println("The 10s DEADLINE_OFFSET buffer should prevent DEADLINE_EXCEEDED");
+            System.out.println("unless network latency or GC pauses consume the buffer.");
+        }
         System.out.println("============================================");
         System.out.println();
 
@@ -119,8 +162,8 @@ public class Reproducer {
             System.out.println("Connecting to local gateway: " + gatewayAddress);
         }
 
-        // Set the request timeout (gRPC deadline = this + 1s offset)
-        builder.defaultRequestTimeout(requestTimeout);
+        // Use a generous default request timeout for non-ActivateJobs calls (e.g., topology)
+        builder.defaultRequestTimeout(Duration.ofSeconds(20));
         System.out.println();
 
         try (final CamundaClient client = builder.build()) {
@@ -130,7 +173,10 @@ public class Reproducer {
                     + " node(s), " + topology.getPartitionsCount() + " partition(s)");
             System.out.println();
 
-            // Register an idle worker -- no jobs of this type exist
+            // Register an idle worker with the configured requestTimeout.
+            // When requestTimeout=0, the protobuf field is 0, so the gateway falls back to
+            // its own longPollingTimeout. The gRPC deadline is only 10s (DEADLINE_OFFSET).
+            // If the server's longPollingTimeout > 10s, the client times out first.
             try (final JobWorker worker = client.newWorker()
                     .jobType(IDLE_JOB_TYPE)
                     .handler(NOOP_HANDLER)
@@ -147,8 +193,9 @@ public class Reproducer {
             System.out.println();
             System.out.println("=== Reproducer complete ===");
             System.out.println("Check above for DEADLINE_EXCEEDED warnings.");
-            System.out.println("If present, the bug is confirmed. If absent, the gateway");
-            System.out.println("responded before the client deadline expired.");
+            System.out.println("If present, the bug is confirmed: DEADLINE_EXCEEDED should be");
+            System.out.println("downgraded to TRACE in JobPollerImpl.logFailure(), just like");
+            System.out.println("RESOURCE_EXHAUSTED already is.");
         }
     }
 

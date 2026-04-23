@@ -67,13 +67,13 @@ jobs:
           count=$(grep -c "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
           echo "Found $count DEADLINE_EXCEEDED warnings in 2 minutes"
           if [ "$count" -gt 0 ]; then
-            echo "✗ Bug confirmed: idle job worker produced $count DEADLINE_EXCEEDED warnings"
+            echo "\u2717 Bug confirmed: idle job worker produced $count DEADLINE_EXCEEDED warnings"
             echo ""
             echo "=== Sample output ==="
             grep -B1 -A2 "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -15
             exit 1
           else
-            echo "✓ No DEADLINE_EXCEEDED warnings observed"
+            echo "\u2713 No DEADLINE_EXCEEDED warnings observed"
           fi
 
       - name: Upload output
@@ -88,6 +88,10 @@ jobs:
         run: docker compose down
 
   # Matrix run: 10 combinations of client/server timeouts
+  # The gRPC DEADLINE_OFFSET for ActivateJobs is hardcoded to 10s.
+  # gRPC deadline = requestTimeout + 10s.
+  # When requestTimeout=0: gateway uses its own longPollingTimeout -> easy to trigger.
+  # When requestTimeout>0: gateway uses client's value -> 10s buffer -> hard to trigger.
   reproduce-matrix:
     if: inputs.mode == 'local-matrix'
     runs-on: ubuntu-latest
@@ -96,48 +100,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- Should trigger bug (server timeout > client gRPC deadline) ---
-          # New client: gRPC deadline = requestTimeout + 1s offset
-          #  1: client 5s  -> deadline 6s,  server 10s  -> server 4s over
-          - client_timeout: 5
-            server_timeout: 10000
-            expect_bug: true
-          #  2: client 8s  -> deadline 9s,  server 15s  -> server 6s over
-          - client_timeout: 8
+          # --- requestTimeout=0: gateway falls back to its longPollingTimeout ---
+          # gRPC deadline = 0 + 10s = 10s. Bug if server longPollingTimeout > 10s.
+          #  1: deadline 10s, server 15s -> server 5s over -> BUG
+          - client_timeout: 0
             server_timeout: 15000
             expect_bug: true
-          #  3: client 10s -> deadline 11s, server 15s  -> server 4s over
-          - client_timeout: 10
-            server_timeout: 15000
-            expect_bug: true
-          #  4: client 10s -> deadline 11s, server 20s  -> server 9s over
-          - client_timeout: 10
+          #  2: deadline 10s, server 20s -> server 10s over -> BUG
+          - client_timeout: 0
             server_timeout: 20000
             expect_bug: true
-          #  5: client 10s -> deadline 11s, server 30s  -> server 19s over (default repro)
-          - client_timeout: 10
+          #  3: deadline 10s, server 30s -> server 20s over -> BUG
+          - client_timeout: 0
             server_timeout: 30000
             expect_bug: true
-          # --- Should NOT trigger bug (server timeout <= client gRPC deadline) ---
-          #  6: client 10s -> deadline 11s, server 5s   -> client 6s over
-          - client_timeout: 10
+          #  4: deadline 10s, server 12s -> server 2s over -> BUG
+          - client_timeout: 0
+            server_timeout: 12000
+            expect_bug: true
+          #  5: deadline 10s, server 8s  -> client 2s over -> NO BUG
+          - client_timeout: 0
+            server_timeout: 8000
+            expect_bug: false
+          #  6: deadline 10s, server 5s  -> client 5s over -> NO BUG
+          - client_timeout: 0
             server_timeout: 5000
             expect_bug: false
-          #  7: client 15s -> deadline 16s, server 10s  -> client 6s over
+          # --- requestTimeout>0: gateway uses client's value, 10s buffer ---
+          # gRPC deadline = requestTimeout + 10s. Gateway holds for requestTimeout.
+          # The 10s DEADLINE_OFFSET buffer should prevent DEADLINE_EXCEEDED.
+          #  7: client 10s -> deadline 20s, gateway holds 10s -> 10s buffer -> NO BUG
+          - client_timeout: 10
+            server_timeout: 30000
+            expect_bug: false
+          #  8: client 5s  -> deadline 15s, gateway holds 5s  -> 10s buffer -> NO BUG
+          - client_timeout: 5
+            server_timeout: 30000
+            expect_bug: false
+          #  9: client 15s -> deadline 25s, gateway holds 15s -> 10s buffer -> NO BUG
           - client_timeout: 15
-            server_timeout: 10000
+            server_timeout: 30000
             expect_bug: false
-          #  8: client 20s -> deadline 21s, server 15s  -> client 6s over
-          - client_timeout: 20
-            server_timeout: 15000
-            expect_bug: false
-          #  9: client 25s -> deadline 26s, server 20s  -> client 6s over
-          - client_timeout: 25
-            server_timeout: 20000
-            expect_bug: false
-          # 10: client 30s -> deadline 31s, server 25s  -> client 6s over
-          - client_timeout: 30
-            server_timeout: 25000
+          # 10: client 1s  -> deadline 11s, gateway holds 1s  -> 10s buffer -> NO BUG
+          - client_timeout: 1
+            server_timeout: 30000
             expect_bug: false
 
     name: "client=${{ matrix.client_timeout }}s server=${{ matrix.server_timeout }}ms (expect_bug=${{ matrix.expect_bug }})"
@@ -150,16 +156,23 @@ jobs:
         run: |
           CLIENT=${{ matrix.client_timeout }}
           SERVER=${{ matrix.server_timeout }}
-          DEADLINE=$((CLIENT + 1))
+          DEADLINE=$((CLIENT + 10))
           SERVER_S=$((SERVER / 1000))
           echo "### Timeout Configuration"
           echo "Client requestTimeout:         ${CLIENT}s"
-          echo "Client gRPC deadline:          ${DEADLINE}s (requestTimeout + 1s offset)"
+          echo "gRPC DEADLINE_OFFSET:          10s (hardcoded in ActivateJobsCommandImpl)"
+          echo "Effective gRPC deadline:       ${DEADLINE}s"
           echo "Server long-polling timeout:   ${SERVER_S}s (${SERVER}ms)"
-          if [ "${{ matrix.expect_bug }}" = "true" ]; then
-            echo "→ Server (${SERVER_S}s) > client deadline (${DEADLINE}s) → EXPECT DEADLINE_EXCEEDED"
+          if [ "$CLIENT" -eq 0 ]; then
+            echo "\u2192 requestTimeout=0: gateway uses its own longPollingTimeout (${SERVER_S}s)"
+            if [ "$SERVER_S" -gt "$DEADLINE" ]; then
+              echo "\u2192 Server (${SERVER_S}s) > gRPC deadline (${DEADLINE}s) \u2192 EXPECT DEADLINE_EXCEEDED"
+            else
+              echo "\u2192 Server (${SERVER_S}s) \u2264 gRPC deadline (${DEADLINE}s) \u2192 expect NO warnings"
+            fi
           else
-            echo "→ Server (${SERVER_S}s) ≤ client deadline (${DEADLINE}s) → expect NO warnings"
+            echo "\u2192 requestTimeout=${CLIENT}s: gateway uses client's value as hold time"
+            echo "\u2192 10s DEADLINE_OFFSET buffer should prevent DEADLINE_EXCEEDED"
           fi
 
       - name: Start Zeebe
@@ -202,15 +215,15 @@ jobs:
           count=$(grep -c "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt || true)
           CLIENT=${{ matrix.client_timeout }}
           SERVER=${{ matrix.server_timeout }}
-          DEADLINE=$((CLIENT + 1))
+          DEADLINE=$((CLIENT + 10))
           SERVER_S=$((SERVER / 1000))
           echo "### Result: client=${CLIENT}s (deadline=${DEADLINE}s) vs server=${SERVER_S}s"
           echo "DEADLINE_EXCEEDED count: $count"
           if [ "$count" -gt 0 ]; then
-            echo "✗ Bug triggered: $count DEADLINE_EXCEEDED warnings"
+            echo "\u2717 Bug triggered: $count DEADLINE_EXCEEDED warnings"
             grep -B1 -A1 "io.grpc.StatusRuntimeException: DEADLINE_EXCEEDED" reproducer-output.txt | head -10
           else
-            echo "✓ No DEADLINE_EXCEEDED warnings"
+            echo "\u2713 No DEADLINE_EXCEEDED warnings"
           fi
           # Fail only when result doesn't match expectation
           if [ "${{ matrix.expect_bug }}" = "true" ] && [ "$count" -eq 0 ]; then
